@@ -47,6 +47,7 @@ type Ctx = {
   addMember: (name: string) => Promise<Member>;
   updateMember: (id: string, p: Partial<Member>) => Promise<void>;
   removeMember: (id: string) => Promise<void>;
+  mergeMembers: (keepId: string, removeId: string) => Promise<boolean>;
   saveExpense: (e: Omit<Expense, 'trip_id' | 'created_at'> & { created_at?: string }) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   savePlan: (p: Omit<PlanItem, 'trip_id'>) => Promise<void>;
@@ -246,8 +247,16 @@ export function TripProvider({ code, children }: { code: string; children: React
       },
       removeMember: async (id) => {
         const inUse = data.expenses.some((e) => e.paid_by === id || e.split_among.includes(id)) || data.payments.some((p) => p.from_member === id || p.to_member === id);
-        if (inUse) { notify('This person is part of expenses, so they can’t be removed.'); return; }
+        if (inUse) { notify('This person is part of expenses, so they can’t be removed. If this is a duplicate, use “Merge into another person” instead.'); return; }
         await remove('members', id);
+      },
+      /** Folds `removeId` into `keepId`: moves their login and every expense, payment, message, photo, task, vote etc. onto the kept person, then deletes the duplicate. Admin only. */
+      mergeMembers: async (keepId, removeId) => {
+        const { error } = await sb().rpc('merge_members', { p_trip: trip.id, p_keep: keepId, p_remove: removeId });
+        if (error) { notify(error.message || 'Couldn’t merge those two.'); return false; }
+        setData((d) => ({ ...d, members: d.members.filter((m) => m.id !== removeId) }));
+        notify('Merged. Everything that duplicate had is now on the one person.');
+        return true;
       },
       saveExpense: (e) => write('expenses', { ...e, trip_id: trip.id, created_at: e.created_at ?? new Date().toISOString() }),
       deleteExpense: (id) => remove('expenses', id),

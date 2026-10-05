@@ -281,6 +281,7 @@ export function MemberSheet({ m, onClose }: { m: Member; onClose: () => void }) 
 
 function People({ onEdit }: { onEdit: (m: Member) => void }) {
   const t = useTrip();
+  const [merging, setMerging] = useState<Member | null>(null);
   async function resetPw(m: Member) {
     const pw = window.prompt(`Set a temporary password for ${m.name} (8+ characters). Tell them to change it in My account.`);
     if (!pw) return;
@@ -301,10 +302,40 @@ function People({ onEdit }: { onEdit: (m: Member) => void }) {
           <div className="row wrap">
             <button className="btn sm" onClick={() => onEdit(m)}>Edit name / UPI</button>
             {m.user_id && m.id !== t.me?.id && <button className="btn sm" onClick={() => resetPw(m)}><Icon n="lock" size={14} /> Temp password</button>}
+            {t.members.length > 1 && <button className="btn sm" onClick={() => setMerging(m)}>Merge into another person</button>}
             {m.id !== t.adminId && m.id !== t.me?.id && <button className="btn sm danger" onClick={() => { if (confirm(`Remove ${m.name} from the trip? This can’t be undone.`)) t.removeMember(m.id); }}><Icon n="trash" size={14} /> Remove</button>}
           </div>
         </div>
       ))}
+      {merging && <MergeSheet from={merging} onClose={() => setMerging(null)} />}
+      <p className="tiny faint">Someone made a second, separate entry instead of picking their pre-added name? Use “Merge into another person” — it moves their login, name, UPI and every expense, message and photo onto whichever one you keep, then removes the extra one.</p>
     </div>
+  );
+}
+
+function MergeSheet({ from, onClose }: { from: Member; onClose: () => void }) {
+  const t = useTrip();
+  const [into, setInto] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const others = t.members.filter((m) => m.id !== from.id);
+  const target = others.find((m) => m.id === into);
+  return (
+    <Sheet open onClose={onClose} title={`Merge ${from.name}`} actions={
+      <button className="btn primary" disabled={!into || busy} onClick={async () => { if (!into) return; setBusy(true); const ok = await t.mergeMembers(into, from.id); setBusy(false); if (ok) onClose(); }}>
+        {busy ? 'Merging…' : target ? `Merge into ${target.name}` : 'Merge'}
+      </button>
+    }>
+      <p className="muted small"><b>{from.name}</b> is a duplicate of someone else already in this trip. Pick who they really are — everything currently on <b>{from.name}</b> (expenses, payments, messages, photos, tasks, their login if they’ve joined) moves onto that person, and this <b>{from.name}</b> entry is removed.</p>
+      <div className="stack-sm">
+        {others.map((m) => (
+          <button key={m.id} className={`card-li ${into === m.id ? 'on' : ''}`} style={{ borderColor: into === m.id ? 'rgba(255,196,107,.7)' : undefined }} onClick={() => setInto(m.id)}>
+            <Avatar m={m} size={32} /><span className="grow">{m.name}{m.id === t.me?.id ? ' (you)' : ''}</span>
+            {m.user_id ? <span className="tiny good">Joined</span> : <span className="tiny muted">Not joined</span>}
+            {into === m.id && <Icon n="check" size={16} />}
+          </button>
+        ))}
+      </div>
+      {target && <p className="tiny faint">This keeps the name “{target.name}”. If you’d rather keep “{from.name}” as the name, remove this duplicate the other way round instead — open “{target.name}” and merge that one into “{from.name}”.</p>}
+    </Sheet>
   );
 }
