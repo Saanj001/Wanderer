@@ -517,3 +517,9 @@ html[data-splash='skip'] .splash { display: none; }
 .breakdown-toggle { padding: 2px 0; }
 .breakdown-toggle svg { transition: transform 0.2s var(--ease); }
 .breakdown-line { padding: 6px 8px; border-radius: var(--r-nested); background: rgba(255, 255, 255, 0.05); }
+
+/* ---------- Me / Everyone settle views ---------- */
+.section-title.good { color: var(--good); }
+.section-title.bad { color: var(--bad); }
+.check-row { width: 100%; text-align: left; cursor: pointer; }
+.check-row:active { opacity: 0.7; }

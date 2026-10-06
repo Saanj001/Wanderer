@@ -3,7 +3,7 @@ import { api } from '@/lib/api';
 import { useMemo, useRef, useState } from 'react';
 import { useTrip } from '@/lib/tripData';
 import { CATS, CAT_KEYS, balances, fmtDate, money, pairwiseDebts, settle, todayISO, upiLink, uid, type ExpenseDebt, type Transfer } from '@/lib/utils';
-import type { Category, Expense } from '@/lib/types';
+import type { Category, Expense, Payment } from '@/lib/types';
 import { Avatar, Field, Icon, Sheet } from './ui';
 import { compress } from '@/lib/tripData';
 
@@ -12,20 +12,11 @@ export default function Money() {
   const { members, expenses, payments, trip, me } = t;
   const [sheet, setSheet] = useState<Expense | 'new' | null>(null);
   const [filter, setFilter] = useState<Category | 'all'>('all');
+  const [view, setView] = useState<'me' | 'everyone'>('me');
   const canAdd = t.can('members_can_add_expenses');
 
   const net = useMemo(() => balances(members, expenses, payments), [members, expenses, payments]);
-  const [detailed, setDetailed] = useState(true);
   const debts = useMemo(() => pairwiseDebts(expenses, payments), [expenses, payments]);
-  const pairs = useMemo(
-    () => Object.keys(debts)
-      .map((key) => { const [from, to] = key.split('=>'); return { from, to, amount: (debts[key] ?? []).reduce((s, l) => s + (l.amount - l.paid), 0) }; })
-      .filter((p) => p.amount > 0.5)
-      .sort((a, b) => b.amount - a.amount),
-    [debts],
-  );
-  const simplified = useMemo(() => settle(net), [net]);
-  const transfers = detailed ? pairs : simplified;
   const mine = me ? net[me.id] ?? 0 : 0;
 
   const grouped = useMemo(() => {
@@ -43,32 +34,12 @@ export default function Money() {
         <span className="muted small">{expenses.length} expenses · {money(expenses.reduce((s, e) => s + e.amount, 0))} total</span>
       </section>
 
-      <section className="stack-sm">
-        <div className="row between" style={{ padding: '0 4px' }}>
-          <div className="section-title">Settle up</div>
-          <div className="seg" style={{ width: 168 }}>
-            <button className={detailed ? 'on' : ''} onClick={() => setDetailed(true)}>By expense</button>
-            <button className={!detailed ? 'on' : ''} onClick={() => setDetailed(false)}>Fewest payments</button>
-          </div>
-        </div>
-        {transfers.length === 0 ? (
-          <div className="glass empty">Nobody owes anybody. Add an expense to get started.</div>
-        ) : transfers.map((tr) => <TransferCard key={tr.from + tr.to} tr={tr} lines={detailed ? debts[`${tr.from}=>${tr.to}`]?.filter((l) => l.amount - l.paid > 0.5) : undefined} />)}
-        {detailed && <p className="tiny faint" style={{ padding: '0 4px' }}>Each row here traces back to the exact expenses. Switch to “Fewest payments” for the smallest number of transfers overall.</p>}
-        {payments.length > 0 && (
-          <details className="glass pad">
-            <summary className="small muted" style={{ cursor: 'pointer' }}>{payments.length} payment{payments.length > 1 ? 's' : ''} marked as paid</summary>
-            <div className="stack-sm" style={{ marginTop: 10 }}>
-              {[...payments].reverse().map((p) => (
-                <div key={p.id} className="row small">
-                  <span className="grow">{t.member(p.from_member)?.name} paid {t.member(p.to_member)?.name} <b className="num">{money(p.amount)}</b></span>
-                  <button className="icon-btn sm" aria-label="Undo payment" onClick={() => t.deletePayment(p.id)}><Icon n="trash" size={15} /></button>
-                </div>
-              ))}
-            </div>
-          </details>
-        )}
-      </section>
+      <div className="seg">
+        <button className={view === 'me' ? 'on' : ''} onClick={() => setView('me')}>Me</button>
+        <button className={view === 'everyone' ? 'on' : ''} onClick={() => setView('everyone')}>Everyone</button>
+      </div>
+
+      {view === 'me' ? <MeSettle debts={debts} /> : <EveryoneSettle debts={debts} payments={payments} />}
 
       <section className="stack-sm">
         <div className="section-title" style={{ padding: '0 4px' }}>Expenses</div>
@@ -98,6 +69,132 @@ export default function Money() {
       {canAdd ? <button className="fab" onClick={() => setSheet('new')}><Icon n="plus" size={22} /> Add expense</button> : <p className="muted small" style={{ textAlign: 'center' }}><Icon n="lock" size={14} /> The admin has limited who can add expenses.</p>}
       {sheet && <ExpenseSheet key={sheet === 'new' ? 'new' : sheet.id} initial={sheet === 'new' ? null : sheet} onClose={() => setSheet(null)} />}
     </div>
+  );
+}
+
+/** "Me" view: just what involves you — who owes you (tick when you’ve got it), and who you owe (tick when you’ve paid). No one else’s numbers. */
+function MeSettle({ debts }: { debts: Record<string, ExpenseDebt[]> }) {
+  const t = useTrip();
+  const me = t.me;
+  if (!me) return null;
+
+  const owedToMe = Object.keys(debts)
+    .filter((k) => k.endsWith(`=>${me.id}`))
+    .map((k) => ({ from: k.split('=>')[0], lines: (debts[k] ?? []).filter((l) => l.amount - l.paid > 0.5) }))
+    .filter((x) => x.lines.length > 0)
+    .sort((a, b) => (t.member(a.from)?.name ?? '').localeCompare(t.member(b.from)?.name ?? ''));
+
+  const iOwe = Object.keys(debts)
+    .filter((k) => k.startsWith(`${me.id}=>`))
+    .map((k) => ({ to: k.split('=>')[1], lines: (debts[k] ?? []).filter((l) => l.amount - l.paid > 0.5) }))
+    .filter((x) => x.lines.length > 0)
+    .sort((a, b) => (t.member(a.to)?.name ?? '').localeCompare(t.member(b.to)?.name ?? ''));
+
+  if (owedToMe.length === 0 && iOwe.length === 0) return <div className="glass empty">🎉 You’re all settled up.</div>;
+
+  return (
+    <div className="stack">
+      {owedToMe.length > 0 && (
+        <section className="stack-sm">
+          <div className="section-title good" style={{ padding: '0 4px' }}>People who owe you</div>
+          {owedToMe.map((g) => <PersonChecklist key={g.from} personId={g.from} lines={g.lines} direction="toMe" />)}
+        </section>
+      )}
+      {iOwe.length > 0 && (
+        <section className="stack-sm">
+          <div className="section-title bad" style={{ padding: '0 4px' }}>People you owe</div>
+          {iOwe.map((g) => <PersonChecklist key={g.to} personId={g.to} lines={g.lines} direction="fromMe" />)}
+        </section>
+      )}
+    </div>
+  );
+}
+
+function PersonChecklist({ personId, lines, direction }: { personId: string; lines: ExpenseDebt[]; direction: 'toMe' | 'fromMe' }) {
+  const t = useTrip();
+  const me = t.me!;
+  const person = t.member(personId);
+  const [busy, setBusy] = useState<string | null>(null);
+  if (!person) return null;
+  const total = lines.reduce((s, l) => s + (l.amount - l.paid), 0);
+  const upiHref = direction === 'fromMe' && person.upi_id ? upiLink({ pa: person.upi_id, pn: person.name, am: total, tn: `${t.trip.name} settle-up` }) : '';
+
+  async function tick(l: ExpenseDebt) {
+    setBusy(l.expenseId);
+    const [from, to] = direction === 'toMe' ? [personId, me.id] : [me.id, personId];
+    await t.addPayment(from, to, l.amount - l.paid, l.expenseId);
+    setBusy(null);
+  }
+
+  return (
+    <div className={`transfer ${direction === 'toMe' ? 'mine' : ''}`}>
+      <div className="row">
+        <Avatar m={person} />
+        <span className="grow small"><b>{person.name}</b> {direction === 'toMe' ? 'owes you' : "you owe"}</span>
+        <b className="num" style={{ fontSize: 18 }}>{money(total)}</b>
+      </div>
+      <div className="stack-sm">
+        {lines.map((l) => (
+          <button key={l.expenseId} className="row small breakdown-line check-row" disabled={busy === l.expenseId} onClick={() => tick(l)}>
+            <span className={`check ${busy === l.expenseId ? 'on' : ''}`}>{busy === l.expenseId && <Icon n="check" size={13} />}</span>
+            <span style={{ fontSize: 15 }}>{CATS[l.category].emoji}</span>
+            <span className="grow ellipsis" style={{ textAlign: 'left' }}>{l.title}<span className="muted"> · {fmtDate(l.date)}</span></span>
+            <b className="num">{money(l.amount - l.paid)}</b>
+          </button>
+        ))}
+      </div>
+      <div className="row wrap">
+        {direction === 'fromMe' && (upiHref
+          ? <a className="btn primary sm" href={upiHref}>Pay with UPI</a>
+          : direction === 'fromMe' && <span className="muted small grow">{person.name} hasn’t added a UPI ID yet.</span>)}
+        <span className="tiny faint grow" style={{ alignSelf: 'center' }}>{direction === 'toMe' ? 'Tap a row once they’ve paid you' : 'Tap a row once you’ve paid'}</span>
+      </div>
+    </div>
+  );
+}
+
+/** "Everyone" view: just who pays whom — nobody’s personal balance is shown, only the transfers needed. */
+function EveryoneSettle({ debts, payments }: { debts: Record<string, ExpenseDebt[]>; payments: Payment[] }) {
+  const t = useTrip();
+  const [simple, setSimple] = useState(false);
+  const pairs = useMemo(
+    () => Object.keys(debts)
+      .map((key) => { const [from, to] = key.split('=>'); return { from, to, amount: (debts[key] ?? []).reduce((s, l) => s + (l.amount - l.paid), 0) }; })
+      .filter((p) => p.amount > 0.5)
+      .sort((a, b) => b.amount - a.amount),
+    [debts],
+  );
+  const net = useMemo(() => {
+    const n: Record<string, number> = {};
+    pairs.forEach((p) => { n[p.from] = (n[p.from] ?? 0) - p.amount; n[p.to] = (n[p.to] ?? 0) + p.amount; });
+    return n;
+  }, [pairs]);
+  const simplified = useMemo(() => settle(net), [net]);
+  const transfers = simple ? simplified : pairs;
+
+  return (
+    <section className="stack-sm">
+      <div className="row between" style={{ padding: '0 4px' }}>
+        <div className="section-title">Who pays whom</div>
+        <button className="small muted" onClick={() => setSimple(!simple)}>{simple ? 'Show by expense' : 'Show fewest payments'}</button>
+      </div>
+      {transfers.length === 0 ? (
+        <div className="glass empty">Nobody owes anybody. Add an expense to get started.</div>
+      ) : transfers.map((tr) => <TransferCard key={tr.from + tr.to} tr={tr} lines={!simple ? debts[`${tr.from}=>${tr.to}`]?.filter((l) => l.amount - l.paid > 0.5) : undefined} />)}
+      {payments.length > 0 && (
+        <details className="glass pad">
+          <summary className="small muted" style={{ cursor: 'pointer' }}>{payments.length} payment{payments.length > 1 ? 's' : ''} marked as paid</summary>
+          <div className="stack-sm" style={{ marginTop: 10 }}>
+            {[...payments].reverse().map((p) => (
+              <div key={p.id} className="row small">
+                <span className="grow">{t.member(p.from_member)?.name} paid {t.member(p.to_member)?.name} <b className="num">{money(p.amount)}</b></span>
+                <button className="icon-btn sm" aria-label="Undo payment" onClick={() => t.deletePayment(p.id)}><Icon n="trash" size={15} /></button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </section>
   );
 }
 
